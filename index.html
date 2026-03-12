@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>F1 Tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <header class="header">
+        <div class="header-content">
+            <div class="logo" id="logoHome">
+                <span class="logo-box1">BOX</span>
+                <span class="logo-box2">BOX</span>
+            </div>
+            <div class="header-right">
+                <button class="standings-btn" id="standingsBtn">🏆 STANDINGS</button>
+                <button class="standings-btn" id="ratingsBtn">⭐ RATINGS</button>
+                <button class="game-nav-btn" id="gameBtn" title="Mini Game">🎮</button>
+                <div class="year-selector">
+                    <button class="year-btn" id="prevYear">&#8249;</button>
+                    <span class="current-year" id="currentYearDisplay">2025</span>
+                    <button class="year-btn" id="nextYear">&#8250;</button>
+                </div>
+                <div class="tz-select-wrap">
+                    <span class="tz-globe">🌍</span>
+                    <select id="tzSelect" class="tz-select">
+                        <option value="auto">My Time</option>
+                        <option value="UTC">UTC</option>
+                        <option value="Europe/London">London (GMT/BST)</option>
+                        <option value="Europe/Paris">Paris / Berlin</option>
+                        <option value="Europe/Helsinki">Helsinki / Moscow</option>
+                        <option value="Asia/Dubai">Dubai (GST)</option>
+                        <option value="Asia/Kolkata">Mumbai / Delhi</option>
+                        <option value="Asia/Singapore">Singapore (SGT)</option>
+                        <option value="Asia/Tokyo">Tokyo (JST)</option>
+                        <option value="Australia/Sydney">Sydney (AEST)</option>
+                        <option value="America/New_York">New York (ET)</option>
+                        <option value="America/Chicago">Chicago (CT)</option>
+                        <option value="America/Los_Angeles">Los Angeles (PT)</option>
+                        <option value="America/Sao_Paulo">São Paulo (BRT)</option>
+                    </select>
+                </div>
+                <div class="theme-toggle-wrap" id="themeToggle" role="button" tabindex="0" title="Toggle dark / light mode">
+                    <span class="theme-icon">☀️</span>
+                    <span class="toggle-track">
+                        <span class="toggle-thumb"></span>
+                    </span>
+                    <span class="theme-icon">🌙</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <nav class="breadcrumb" id="breadcrumb" style="display:none;">
+        <div class="breadcrumb-content">
+            <span class="breadcrumb-item" id="breadcrumbHome">Season</span>
+            <span class="breadcrumb-sep">›</span>
+            <span class="breadcrumb-item" id="breadcrumbMeeting"></span>
+            <span class="breadcrumb-sep" id="breadcrumbSep2" style="display:none;">›</span>
+            <span class="breadcrumb-item" id="breadcrumbSession" style="display:none;"></span>
+        </div>
+    </nav>
+
+    <main class="main">
+        <div id="loading" class="loading" style="display:none;">
+            <div class="spinner"></div>
+            <p>Loading F1 data...</p>
+        </div>
+        <div id="app"></div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
