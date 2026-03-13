@@ -1076,7 +1076,7 @@ function renderStandings(driverStandings, constructorStandings, formMap = {}) {
                     <div class="acronym">${d.permanentNumber ? '#' + d.permanentNumber : ''}</div>
                 </div>
             </div></td>
-            <td><div class="team-cell">
+            <td class="team-col"><div class="team-cell">
                 <span class="team-stripe" style="background:${tc}"></span>
                 <span class="team-label">${team?.name || '—'}</span>
             </div></td>
@@ -1118,9 +1118,9 @@ function renderStandings(driverStandings, constructorStandings, formMap = {}) {
             <span class="form-legend-item"><span class="form-dot fdot-out"></span>Outside points</span>
             <span class="form-legend-item"><span class="form-dot fdot-dnf"></span>DNF</span>
         </div>
-        <div class="results-wrap"><table class="results-table">
-            <thead><tr><th>POS</th><th>DRIVER</th><th>TEAM</th><th class="form-th">FORM</th><th>WINS</th><th>POINTS</th></tr></thead>
-            <tbody>${driverRows || '<tr><td colspan="5" class="no-data-cell">No data yet</td></tr>'}</tbody>
+        <div class="results-wrap"><table class="results-table standings-table">
+            <thead><tr><th>POS</th><th>DRIVER</th><th class="team-col">TEAM</th><th class="form-th">FORM</th><th>WINS</th><th>POINTS</th></tr></thead>
+            <tbody>${driverRows || '<tr><td colspan="6" class="no-data-cell">No data yet</td></tr>'}</tbody>
         </table></div>
     </div>
     <div id="standings-constructors" class="standings-panel" style="display:none">

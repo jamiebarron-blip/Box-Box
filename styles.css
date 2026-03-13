@@ -1164,4 +1164,12 @@ body {
     .section-header h1 { font-size: 20px; }
     .results-table thead th,
     .results-table tbody td { padding: 10px 12px; }
+
+    /* Hide TEAM column on mobile to make room for FORM */
+    .team-col { display: none; }
+    /* Reduce min-width so standings table fits on mobile */
+    .standings-table { min-width: auto; }
+    .standings-table thead th,
+    .standings-table tbody td { padding: 10px 8px; }
+    .form-th { min-width: 60px; }
 }
