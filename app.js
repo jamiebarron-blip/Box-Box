@@ -9,11 +9,56 @@ const API = 'https://api.openf1.org/v1';
 const JOLPICA_API = 'https://api.jolpi.ca/ergast/f1';
 const cache = new Map();
 
+/* ─── SERVICE WORKER ─────────────────────────────────────── */
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
 /* ─── LOCALSTORAGE CACHE ─────────────────────────────────── */
 const LS_PREFIX  = 'f1_';
 const TTL_4H     = 4  * 60 * 60 * 1000;
 const TTL_24H    = 24 * 60 * 60 * 1000;
-const NO_LS_ENDPOINTS = ['position', 'laps']; // too large for localStorage
+const NO_LS_ENDPOINTS = ['position', 'laps']; // use IndexedDB instead
+
+/* ─── INDEXEDDB FOR LARGE DATA ───────────────────────────── */
+const IDB_NAME = 'f1_cache';
+const IDB_STORE = 'responses';
+let _idb = null;
+
+function openIDB() {
+    if (_idb) return Promise.resolve(_idb);
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+        req.onsuccess = () => { _idb = req.result; resolve(_idb); };
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function idbGet(key) {
+    try {
+        const db = await openIDB();
+        return new Promise((resolve) => {
+            const tx = db.transaction(IDB_STORE, 'readonly');
+            const req = tx.objectStore(IDB_STORE).get(key);
+            req.onsuccess = () => {
+                const row = req.result;
+                if (!row) return resolve(null);
+                if (row.expires && Date.now() > row.expires) return resolve(null);
+                resolve(row.data);
+            };
+            req.onerror = () => resolve(null);
+        });
+    } catch { return null; }
+}
+
+async function idbSet(key, data, ttlMs) {
+    try {
+        const db = await openIDB();
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put({ data, expires: ttlMs ? Date.now() + ttlMs : null }, key);
+    } catch { /* silently ignore */ }
+}
 
 function lsGet(key) {
     try {
@@ -59,6 +104,51 @@ let countdownInterval = null;
 let cdSessions        = [];   // upcoming sessions for countdown pills
 let cdCurrentIdx      = 0;
 let favDriver         = localStorage.getItem('f1_fav_driver') || null; // persisted driver_number
+let calendarTab       = 'results';    // 'results' | 'upcoming' — persisted per session
+let _skipHashUpdate   = false; // prevent recursive hash ↔ nav loops
+
+/* ─── HASH ROUTING ──────────────────────────────────────── */
+function updateHash(hash) {
+    if (_skipHashUpdate) return;
+    const target = hash || '';
+    if (location.hash.replace(/^#/, '') !== target) {
+        history.pushState(null, '', '#' + target);
+    }
+}
+
+function routeFromHash() {
+    const h = location.hash.replace(/^#/, '');
+    if (!h) { navCalendar(); return; }
+    const parts = h.split('/');
+    const route = parts[0];
+
+    if (route === 'session' && parts[1] && parts[2]) {
+        const meetingKey  = parseInt(parts[1]);
+        const sessionKey  = parseInt(parts[2]);
+        if (parts[3]) { currentYear = parseInt(parts[3]); document.getElementById('currentYearDisplay').textContent = currentYear; }
+        navSession(sessionKey, meetingKey);
+    } else if (route === 'weekend' && parts[1]) {
+        const meetingKey = parseInt(parts[1]);
+        if (parts[2]) { currentYear = parseInt(parts[2]); document.getElementById('currentYearDisplay').textContent = currentYear; }
+        navWeekend(meetingKey);
+    } else if (route === 'standings') {
+        if (parts[1]) { currentYear = parseInt(parts[1]); document.getElementById('currentYearDisplay').textContent = currentYear; }
+        navStandings();
+    } else if (route === 'ratings') {
+        if (parts[1]) { currentYear = parseInt(parts[1]); document.getElementById('currentYearDisplay').textContent = currentYear; }
+        navRatings();
+    } else if (route === 'game') {
+        navGame();
+    } else {
+        navCalendar();
+    }
+}
+
+window.addEventListener('hashchange', () => {
+    _skipHashUpdate = true;
+    routeFromHash();
+    _skipHashUpdate = false;
+});
 
 /* ─── CONSTANTS ─────────────────────────────────────────── */
 const COUNTRY_FLAGS = {
@@ -132,26 +222,43 @@ async function apiFetch(endpoint, params = {}) {
     if (cache.has(url)) return cache.get(url);
 
     const useLs = !NO_LS_ENDPOINTS.includes(endpoint);
+    const useIdb = NO_LS_ENDPOINTS.includes(endpoint);
+
+    /* Check localStorage or IndexedDB */
     if (useLs) {
         const cached = lsGet(url);
         if (cached) { cache.set(url, cached); return cached; }
+    } else if (useIdb) {
+        const cached = await idbGet(url);
+        if (cached) { cache.set(url, cached); return cached; }
     }
 
-    try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        cache.set(url, data);
-        if (useLs) {
+    const MAX_RETRIES = 3;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const res = await fetch(url);
+            if (res.status === 429 && attempt < MAX_RETRIES) {
+                await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+                continue;
+            }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            cache.set(url, data);
             const thisYear = new Date().getFullYear();
             const yr = parseInt(params.year) || thisYear;
-            lsSet(url, data, yr < thisYear ? null : TTL_4H);
+            const ttl = yr < thisYear ? null : TTL_4H;
+            if (useLs) {
+                lsSet(url, data, ttl);
+            } else if (useIdb) {
+                idbSet(url, data, ttl);
+            }
+            return data;
+        } catch (e) {
+            console.error(`[F1 API] ${endpoint}:`, e.message);
+            return [];
         }
-        return data;
-    } catch (e) {
-        console.error(`[F1 API] ${endpoint}:`, e.message);
-        return [];
     }
+    return [];
 }
 
 async function jolpicaFetch(path) {
@@ -335,8 +442,13 @@ function renderPits(pits) {
     }).join('')}</div>`;
 }
 
+const _weatherCache = new Map();
+
 function renderWeather(weather) {
     if (!weather || weather.length === 0) return '';
+
+    /* Memoize — same weather array reference = same result */
+    if (_weatherCache.has(weather)) return _weatherCache.get(weather);
 
     const vals = key => weather.map(w => w[key]).filter(v => v != null && !isNaN(v));
     const avg  = key => { const v = vals(key); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
@@ -362,7 +474,9 @@ function renderWeather(weather) {
         isWet ? `<span class="weather-wet">🌧️ Wet</span>` : `<span class="weather-dry">☀️ Dry</span>`,
     ].filter(Boolean).map(i => `<span class="weather-item">${i}</span>`).join('');
 
-    return `<div class="weather-bar">${items}</div>`;
+    const html = `<div class="weather-bar">${items}</div>`;
+    _weatherCache.set(weather, html);
+    return html;
 }
 
 /* ─── POSITION CHART ─────────────────────────────────────── */
@@ -509,302 +623,19 @@ function setupPositionChart() {
     }
 }
 
-/* ─── MINI-GAME ──────────────────────────────────────────── */
+/* ─── MINI-GAME (lazy-loaded from game.js) ───────────────── */
 let _game = null;
+let _gameLoaded = false;
 
-class F1Game {
-    constructor(canvas) {
-        this.canvas  = canvas;
-        this.ctx     = canvas.getContext('2d');
-        this.W       = 360;
-        this.H       = 560;
-        canvas.width  = this.W;
-        canvas.height = this.H;
-        canvas.style.maxWidth = '100%';
-
-        /* Layout */
-        this.RL = 40;              // road left edge
-        this.RR = this.W - 40;    // road right edge
-        this.RW = this.RR - this.RL;
-        this.LW = this.RW / 3;    // lane width
-        this.LANES = [this.RL + this.LW * 0.5, this.RL + this.LW * 1.5, this.RL + this.LW * 2.5];
-        this.CW = 28; this.CH = 52;  // car dimensions
-
-        /* State */
-        this.phase       = 'start';
-        this.frame       = 0;
-        this.speed       = 3.5;
-        this.score       = 0;
-        this.highScore   = parseInt(localStorage.getItem('f1_game_hs') || '0');
-        this.roadOffset  = 0;
-        this.crashFrame  = 0;
-
-        /* Player */
-        this.playerLane    = 1;
-        this.playerX       = this.LANES[1];
-        this.playerTargetX = this.LANES[1];
-        this.playerY       = this.H - 80;
-
-        /* Obstacles */
-        this.obstacles       = [];
-        this.nextObstacleIn  = 70;
-        this.OB_COLORS       = ['#27F4D2','#3671C6','#FF8000','#229971','#6692FF','#B6BABD','#FF87BC'];
-
-        this._raf      = null;
-        this._keydown  = e => this._handleKey(e);
-        document.addEventListener('keydown', this._keydown);
-
-        canvas.addEventListener('click', e => {
-            if (this.phase !== 'playing') { this.restart(); return; }
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = this.W / rect.width;
-            const cx = (e.clientX - rect.left) * scaleX;
-            this.movePlayer(cx < this.W / 2 ? -1 : 1);
-        });
-    }
-
-    start() { this.running = true; this._loop(); }
-
-    stop() {
-        this.running = false;
-        document.removeEventListener('keydown', this._keydown);
-        if (this._raf) cancelAnimationFrame(this._raf);
-    }
-
-    restart() {
-        this.phase = 'playing';
-        this.frame = this.score = this.crashFrame = 0;
-        this.speed = 3.5; this.roadOffset = 0;
-        this.playerLane = 1;
-        this.playerX = this.playerTargetX = this.LANES[1];
-        this.obstacles = []; this.nextObstacleIn = 70;
-    }
-
-    movePlayer(dir) {
-        if (this.phase === 'start' || this.phase === 'crashed') { this.restart(); return; }
-        this.playerLane = Math.max(0, Math.min(2, this.playerLane + dir));
-        this.playerTargetX = this.LANES[this.playerLane];
-    }
-
-    _handleKey(e) {
-        if (e.key === 'ArrowLeft')  { e.preventDefault(); this.movePlayer(-1); }
-        if (e.key === 'ArrowRight') { e.preventDefault(); this.movePlayer(1); }
-        if ((e.key === ' ' || e.key === 'Enter') && this.phase !== 'playing') { e.preventDefault(); this.restart(); }
-    }
-
-    _spawnObstacle() {
-        const recent = this.obstacles.slice(-2).map(o => o.lane);
-        let lane, tries = 0;
-        do { lane = Math.floor(Math.random() * 3); tries++; } while (recent.includes(lane) && tries < 6);
-        this.obstacles.push({
-            lane, x: this.LANES[lane], y: -this.CH - 20,
-            color: this.OB_COLORS[Math.floor(Math.random() * this.OB_COLORS.length)],
-        });
-    }
-
-    _update() {
-        if (this.phase !== 'playing') return;
-        this.frame++;
-        this.score    = Math.floor(this.frame / 6);       // score = 10 pts/sec
-        this.speed    = 3.5 + this.frame * 0.0025;
-        this.roadOffset = (this.roadOffset + this.speed) % 60;
-        this.playerX += (this.playerTargetX - this.playerX) * 0.18;
-
-        this.obstacles.forEach(o => o.y += this.speed);
-        this.obstacles = this.obstacles.filter(o => o.y < this.H + this.CH);
-
-        this.nextObstacleIn--;
-        if (this.nextObstacleIn <= 0) {
-            this._spawnObstacle();
-            this.nextObstacleIn = Math.max(28, 70 - this.speed * 4) + Math.random() * 30;
-        }
-
-        /* Collision — slightly forgiving hitbox */
-        for (const o of this.obstacles) {
-            if (Math.abs(o.x - this.playerX) < this.CW - 6 && Math.abs(o.y - this.playerY) < this.CH - 8) {
-                this.phase = 'crashed';
-                this.crashFrame = 0;
-                if (this.score > this.highScore) {
-                    this.highScore = this.score;
-                    localStorage.setItem('f1_game_hs', this.highScore);
-                    const el = document.getElementById('gameHsDisplay');
-                    if (el) el.textContent = this.highScore;
-                }
-                addToLeaderboard(this.score);
-                const lbEl = document.getElementById('game-leaderboard');
-                if (lbEl) lbEl.innerHTML = renderLeaderboard(this.score);
-                break;
-            }
-        }
-    }
-
-    _loop() {
-        if (!this.running) return;
-        this._update();
-        this._draw();
-        this._raf = requestAnimationFrame(() => this._loop());
-    }
-
-    _draw() {
-        const ctx = this.ctx, W = this.W, H = this.H;
-        ctx.clearRect(0, 0, W, H);
-
-        /* Grass */
-        ctx.fillStyle = '#2d5a1b';  ctx.fillRect(0, 0, W, H);
-        /* Grass detail stripes */
-        ctx.fillStyle = '#336622';
-        ctx.fillRect(0, 0, this.RL, H);
-        ctx.fillRect(this.RR, 0, W - this.RR, H);
-
-        /* Road */
-        ctx.fillStyle = '#3a3a3a'; ctx.fillRect(this.RL, 0, this.RW, H);
-
-        /* Road edge stripes (kerb) */
-        const kerbH = 18;
-        for (let y = -kerbH; y < H + kerbH; y += kerbH * 2) {
-            ctx.fillStyle = '#cc0000';
-            ctx.fillRect(this.RL - 8, y + (this.roadOffset % (kerbH * 2)), 8, kerbH);
-            ctx.fillStyle = '#fff';
-            ctx.fillRect(this.RL - 8, y + kerbH + (this.roadOffset % (kerbH * 2)), 8, kerbH);
-            ctx.fillStyle = '#cc0000';
-            ctx.fillRect(this.RR, y + (this.roadOffset % (kerbH * 2)), 8, kerbH);
-            ctx.fillStyle = '#fff';
-            ctx.fillRect(this.RR, y + kerbH + (this.roadOffset % (kerbH * 2)), 8, kerbH);
-        }
-
-        /* Road edges */
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(this.RL, 0); ctx.lineTo(this.RL, H); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(this.RR, 0); ctx.lineTo(this.RR, H); ctx.stroke();
-
-        /* Lane dashes */
-        ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2;
-        ctx.setLineDash([28, 28]); ctx.lineDashOffset = -this.roadOffset;
-        for (let i = 1; i <= 2; i++) {
-            const lx = this.RL + this.LW * i;
-            ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, H); ctx.stroke();
-        }
-        ctx.setLineDash([]);
-
-        /* Obstacles */
-        this.obstacles.forEach(o => this._drawCar(ctx, o.x, o.y, o.color, false));
-
-        /* Player */
-        if (this.phase !== 'crashed' || this.crashFrame < 15) {
-            this._drawCar(ctx, this.playerX, this.playerY, '#E8002D', true);
-        }
-
-        /* Crash explosion */
-        if (this.phase === 'crashed') {
-            this.crashFrame++;
-            const r = this.crashFrame * 4;
-            const alpha = Math.max(0, 1 - this.crashFrame / 25);
-            ctx.fillStyle = `rgba(255, 140, 0, ${alpha * 0.9})`;
-            ctx.beginPath(); ctx.arc(this.playerX, this.playerY, r, 0, Math.PI * 2); ctx.fill();
-            ctx.fillStyle = `rgba(255, 255, 0, ${alpha * 0.6})`;
-            ctx.beginPath(); ctx.arc(this.playerX, this.playerY, r * 0.5, 0, Math.PI * 2); ctx.fill();
-        }
-
-        /* HUD */
-        ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, 46);
-        ctx.font = 'bold 13px Inter, sans-serif';
-        ctx.fillStyle = '#fff';
-        ctx.textAlign = 'left';  ctx.fillText(`SCORE  ${String(this.score).padStart(4,'0')}`, this.RL + 2, 30);
-        ctx.textAlign = 'center'; ctx.fillText(`${Math.floor(200 + this.frame * 0.12)} km/h`, W / 2, 30);
-        ctx.textAlign = 'right';  ctx.fillText(`BEST   ${String(this.highScore).padStart(4,'0')}`, this.RR - 2, 30);
-
-        /* Start overlay */
-        if (this.phase === 'start') {
-            this._drawOverlay(ctx, W, H, 'BOX BOX RACER', 'Dodge the backmarkers!', '◀ ▶  or tap sides to steer');
-        }
-
-        /* Crash overlay */
-        if (this.phase === 'crashed' && this.crashFrame > 35) {
-            const newBest = this.score >= this.highScore && this.score > 0;
-            this._drawOverlay(ctx, W, H, 'CRASH OUT!',
-                newBest ? `NEW BEST: ${this.score}` : `SCORE: ${this.score}`,
-                'Tap or press SPACE to restart');
-        }
-    }
-
-    _drawOverlay(ctx, W, H, title, line1, line2) {
-        ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, W, H);
-        ctx.textAlign = 'center';
-        ctx.fillStyle = '#E8002D';
-        ctx.font = 'bold 34px Inter, sans-serif';
-        ctx.fillText(title, W / 2, H / 2 - 36);
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 17px Inter, sans-serif';
-        ctx.fillText(line1, W / 2, H / 2 + 4);
-        ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.font = '13px Inter, sans-serif';
-        ctx.fillText(line2, W / 2, H / 2 + 32);
-    }
-
-    _drawCar(ctx, x, y, color, isPlayer) {
-        const hw = this.CW / 2, hh = this.CH / 2;
-        ctx.save();
-        ctx.translate(x, y);
-
-        /* Shadow */
-        ctx.fillStyle = 'rgba(0,0,0,0.28)';
-        this._rrect(ctx, -hw + 2, -hh + 2, this.CW, this.CH, 4);
-
-        /* Side pods */
-        ctx.fillStyle = this._shade(color, 0.8);
-        ctx.fillRect(-hw - 6, -hh * 0.15, 6, hh * 0.75);
-        ctx.fillRect(hw, -hh * 0.15, 6, hh * 0.75);
-
-        /* Body */
-        ctx.fillStyle = color;
-        this._rrect(ctx, -hw, -hh, this.CW, this.CH, 4);
-
-        /* Nose cone */
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.moveTo(-hw * 0.42, -hh);
-        ctx.lineTo(hw * 0.42, -hh);
-        ctx.lineTo(0, -hh - hh * 0.42);
-        ctx.closePath(); ctx.fill();
-
-        /* Front wing */
-        ctx.fillStyle = this._shade(color, 0.65);
-        ctx.fillRect(-hw - 5, -hh + 2, this.CW + 10, 4);
-
-        /* Rear wing */
-        ctx.fillStyle = this._shade(color, 0.65);
-        ctx.fillRect(-hw - 7, hh - 8, this.CW + 14, 4);
-
-        /* Cockpit */
-        ctx.fillStyle = '#0a0a18';
-        ctx.beginPath();
-        ctx.ellipse(0, -hh * 0.06, hw * 0.38, hh * 0.2, 0, 0, Math.PI * 2); ctx.fill();
-
-        /* Helmet */
-        ctx.fillStyle = isPlayer ? '#FFD700' : '#aaa';
-        ctx.beginPath();
-        ctx.arc(0, -hh * 0.06, hw * 0.2, 0, Math.PI * 2); ctx.fill();
-
-        ctx.restore();
-    }
-
-    _rrect(ctx, x, y, w, h, r) {
-        ctx.beginPath();
-        ctx.moveTo(x + r, y);
-        ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-        ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-        ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-        ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
-        ctx.closePath(); ctx.fill();
-    }
-
-    _shade(hex, f) {
-        if (!hex.startsWith('#') || hex.length < 7) return hex;
-        const r = Math.floor(parseInt(hex.slice(1,3),16)*f);
-        const g = Math.floor(parseInt(hex.slice(3,5),16)*f);
-        const b = Math.floor(parseInt(hex.slice(5,7),16)*f);
-        return `rgb(${r},${g},${b})`;
-    }
+function loadGameScript() {
+    if (_gameLoaded) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'game.js';
+        s.onload = () => { _gameLoaded = true; resolve(); };
+        s.onerror = reject;
+        document.head.appendChild(s);
+    });
 }
 
 window.gameTouch = function(dir) { if (_game) _game.movePlayer(dir === 'left' ? -1 : 1); };
@@ -866,15 +697,17 @@ async function navGame() {
     if (_game) { _game.stop(); _game = null; }
     currentView = 'game'; currentMeeting = null; currentSession = null;
     clearCountdown();
+    updateHash('game');
     document.getElementById('gameBtn').classList.add('active');
     document.getElementById('standingsBtn').classList.remove('active');
     document.getElementById('ratingsBtn').classList.remove('active');
     updateBreadcrumb();
     setApp(renderGameHTML());
+    await loadGameScript();
     requestAnimationFrame(() => {
         const canvas = document.getElementById('gameCanvas');
-        if (!canvas) return;
-        _game = new F1Game(canvas);
+        if (!canvas || !window.F1Game) return;
+        _game = new window.F1Game(canvas);
         _game.start();
     });
 }
@@ -971,9 +804,18 @@ function renderRatings(meetings, driverStandings) {
     _ratingsDrivers = driverStandings;
     const raceOptions = `<option value="">— Select a race —</option>` +
         meetings.map(m => `<option value="${m.meeting_key}">${flag(m.country_code)} ${m.meeting_name}</option>`).join('');
+    const ratingsCount = Object.keys(getRatingsAll(currentYear)).length;
     return `<div class="section-header">
         <h1>⭐ Driver Ratings</h1>
         <p class="section-subtitle">Your personal performance scores for each driver, each race</p>
+    </div>
+    <div class="ratings-explainer">
+        <p>Rate each driver's performance after every race on a 1–10 scale. Your ratings are saved on this device and used to build your personal season rankings in the <strong>Season Averages</strong> tab.</p>
+        <div class="ratings-export-row">
+            <button class="ratings-export-btn" onclick="exportRatings()">📥 Export Ratings</button>
+            <label class="ratings-import-btn">📤 Import Ratings<input type="file" accept=".json" onchange="importRatings(event)" hidden></label>
+            ${ratingsCount ? `<span class="ratings-count">${ratingsCount} race${ratingsCount === 1 ? '' : 's'} rated</span>` : ''}
+        </div>
     </div>
     <div class="standings-tabs">
         <button class="standings-tab active" onclick="showRatingsTab('rate',this)">Rate Races</button>
@@ -1006,12 +848,51 @@ window.onRateDriver = function(meetingKey, driverCode, score) {
     saveRatingScore(currentYear, meetingKey, driverCode, score);
     document.getElementById('rating-drivers-grid').innerHTML = renderDriverRatingGrid(meetingKey);
 };
+window.exportRatings = function() {
+    const data = {};
+    for (let y = 2023; y <= new Date().getFullYear(); y++) {
+        const r = getRatingsAll(y);
+        if (Object.keys(r).length) data[y] = r;
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `box-box-ratings-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+};
+window.importRatings = function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const data = JSON.parse(e.target.result);
+            let imported = 0;
+            Object.entries(data).forEach(([year, ratings]) => {
+                if (typeof ratings === 'object' && ratings !== null) {
+                    const existing = getRatingsAll(year);
+                    const merged = { ...existing, ...ratings };
+                    localStorage.setItem(`f1_ratings_${year}`, JSON.stringify(merged));
+                    imported += Object.keys(ratings).length;
+                }
+            });
+            alert(`Imported ratings for ${imported} race${imported === 1 ? '' : 's'}. Your existing ratings were preserved.`);
+            navRatings();
+        } catch {
+            alert('Could not read that file. Please use a JSON file exported from Box Box.');
+        }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+};
 
 async function navRatings() {
     currentView    = 'ratings';
     currentMeeting = null;
     currentSession = null;
     clearCountdown();
+    updateHash(`ratings/${currentYear}`);
     document.getElementById('ratingsBtn').classList.add('active');
     document.getElementById('standingsBtn').classList.remove('active');
     updateBreadcrumb();
@@ -1076,11 +957,11 @@ function renderStandings(driverStandings, constructorStandings, formMap = {}) {
                     <div class="acronym">${d.permanentNumber ? '#' + d.permanentNumber : ''}</div>
                 </div>
             </div></td>
-            <td><div class="team-cell">
+            <td class="col-team"><div class="team-cell">
                 <span class="team-stripe" style="background:${tc}"></span>
                 <span class="team-label">${team?.name || '—'}</span>
             </div></td>
-            <td class="form-cell">${formDots || '<span class="form-none">—</span>'}</td>
+            <td class="form-cell col-form">${formDots || '<span class="form-none">—</span>'}</td>
             <td class="standings-wins">${entry.wins}</td>
             <td class="standings-points">${entry.points}</td>
         </tr>`;
@@ -1119,7 +1000,7 @@ function renderStandings(driverStandings, constructorStandings, formMap = {}) {
             <span class="form-legend-item"><span class="form-dot fdot-dnf"></span>DNF</span>
         </div>
         <div class="results-wrap"><table class="results-table">
-            <thead><tr><th>POS</th><th>DRIVER</th><th>TEAM</th><th class="form-th">FORM</th><th>WINS</th><th>POINTS</th></tr></thead>
+            <thead><tr><th>POS</th><th>DRIVER</th><th class="col-team">TEAM</th><th class="form-th col-form">FORM</th><th>WINS</th><th>POINTS</th></tr></thead>
             <tbody>${driverRows || '<tr><td colspan="5" class="no-data-cell">No data yet</td></tr>'}</tbody>
         </table></div>
     </div>
@@ -1309,31 +1190,65 @@ function renderCalendar(meetings, cdInfo) {
         </div>`;
     }
 
-    const cards = meetings.map((m, i) => {
-        const st    = meetingStatus(m);
+    /* Split meetings into completed and upcoming */
+    const completed = [];
+    const upcoming  = [];
+    meetings.forEach((m, i) => {
+        const st = meetingStatus(m);
         const isNext = (i === nextIdx);
-        const cardCls = st === 'completed' ? 'completed' : isNext ? 'next-race' : 'upcoming';
-        const badgeCls = st === 'completed' ? 'completed' : isNext ? 'next' : 'upcoming';
-        const badgeTxt = st === 'completed' ? 'Completed' : isNext ? 'Next Race' : 'Upcoming';
+        const obj = { m, i, st, isNext };
+        if (st === 'completed') completed.push(obj);
+        else upcoming.push(obj);
+    });
+    /* Results tab: reverse chronological (most recent first) */
+    const completedSorted = [...completed].reverse();
 
-        return `<div class="race-card ${cardCls}" onclick="navWeekend(${m.meeting_key})">
-            <div class="race-card-top">
-                <span class="round-badge">R${i + 1}</span>
-                <span class="status-badge ${badgeCls}">${badgeTxt}</span>
-            </div>
-            <span class="race-flag">${flag(m.country_code)}</span>
-            <div class="race-name">${m.meeting_name || m.meeting_official_name || 'Grand Prix'}</div>
-            <div class="circuit-name">📍 ${m.location || m.circuit_short_name || ''}</div>
-            <div class="race-dates">📅 ${fmtDateRange(m.date_start, m.date_end)}</div>
-        </div>`;
-    }).join('');
+    function buildCards(list) {
+        return list.map(({ m, i, st, isNext }) => {
+            const cardCls = st === 'completed' ? 'completed' : isNext ? 'next-race' : 'upcoming';
+            const badgeCls = st === 'completed' ? 'completed' : isNext ? 'next' : 'upcoming';
+            const badgeTxt = st === 'completed' ? 'Completed' : isNext ? 'Next Race' : 'Upcoming';
+            return `<div class="race-card ${cardCls}" onclick="navWeekend(${m.meeting_key})">
+                <div class="race-card-top">
+                    <span class="round-badge">R${i + 1}</span>
+                    <span class="status-badge ${badgeCls}">${badgeTxt}</span>
+                </div>
+                <span class="race-flag">${flag(m.country_code)}</span>
+                <div class="race-name">${m.meeting_name || m.meeting_official_name || 'Grand Prix'}</div>
+                <div class="circuit-name">📍 ${m.location || m.circuit_short_name || ''}</div>
+                <div class="race-dates">📅 ${fmtDateRange(m.date_start, m.date_end)}</div>
+            </div>`;
+        }).join('');
+    }
+
+    const resultsCards  = completedSorted.length
+        ? `<div class="calendar-grid">${buildCards(completedSorted)}</div>`
+        : `<div class="empty-state"><span class="icon">🏁</span><h3>No results yet</h3><p>Completed races will appear here.</p></div>`;
+    const upcomingCards = upcoming.length
+        ? `<div class="calendar-grid">${buildCards(upcoming)}</div>`
+        : `<div class="empty-state"><span class="icon">📅</span><h3>Season complete</h3><p>All races have been completed!</p></div>`;
+
+    const isResults  = calendarTab === 'results';
 
     return bannerHtml + `<div class="section-header">
         <h1>${currentYear} Formula 1 Season</h1>
         <p>${meetings.length} Grands Prix · click a race to explore the weekend</p>
     </div>
-    <div class="calendar-grid">${cards}</div>`;
+    <div class="standings-tabs">
+        <button class="standings-tab${isResults ? ' active' : ''}" onclick="switchCalendarTab('results',this)">Results (${completed.length})</button>
+        <button class="standings-tab${!isResults ? ' active' : ''}" onclick="switchCalendarTab('upcoming',this)">Upcoming (${upcoming.length})</button>
+    </div>
+    <div id="calendar-results" class="standings-panel" style="display:${isResults ? 'block' : 'none'}">${resultsCards}</div>
+    <div id="calendar-upcoming" class="standings-panel" style="display:${!isResults ? 'block' : 'none'}">${upcomingCards}</div>`;
 }
+
+window.switchCalendarTab = function(tab, btn) {
+    calendarTab = tab;
+    document.querySelectorAll('.standings-tabs .standings-tab').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    document.getElementById('calendar-results').style.display  = tab === 'results'  ? 'block' : 'none';
+    document.getElementById('calendar-upcoming').style.display  = tab === 'upcoming' ? 'block' : 'none';
+};
 
 /* ─── VIEW: WEEKEND ──────────────────────────────────────── */
 function renderWeekend(meeting, sessions) {
@@ -1518,19 +1433,19 @@ function renderSessionResults(session, drivers, positions, laps, stints, raceCon
                         <div class="acronym">${d.name_acronym}</div>
                     </div>
                 </div></td>
-                <td><div class="team-cell">
+                <td class="col-team"><div class="team-cell">
                     <span class="team-stripe" style="background:${tc}"></span>
                     <span class="team-label">${d.team_name}</span>
                 </div></td>
                 <td>${renderTyres(r.stints)}</td>
-                <td>${renderPits(r.pits)}</td>
-                <td>${pens}</td>
+                <td class="col-pits">${renderPits(r.pits)}</td>
+                <td class="col-penalties">${pens}</td>
             </tr>`;
         }).join('');
 
         return header + renderWeather(weather) + renderPositionChart(laps, drivers) + `<div class="results-wrap"><table class="results-table">
             <thead><tr>
-                <th class="fav-star-th"></th><th>POS</th><th>DRIVER</th><th>TEAM</th><th>TYRE STRATEGY</th><th>PITS</th><th>PENALTIES</th>
+                <th class="fav-star-th"></th><th>POS</th><th>DRIVER</th><th class="col-team">TEAM</th><th>TYRES</th><th class="col-pits">PITS</th><th class="col-penalties">PENALTIES</th>
             </tr></thead>
             <tbody>${rows}</tbody>
         </table></div>`;
@@ -1622,14 +1537,14 @@ function renderSessionResults(session, drivers, positions, laps, stints, raceCon
                         <div class="acronym">${d.name_acronym}</div>
                     </div>
                 </div></td>
-                <td><div class="team-cell">
+                <td class="col-team"><div class="team-cell">
                     <span class="team-stripe" style="background:${tc}"></span>
                     <span class="team-label">${d.team_name}</span>
                 </div></td>
                 <td>${timeStr}</td>
-                <td>${gapStr}</td>
+                <td class="col-gap">${gapStr}</td>
                 <td>${tyreCell}</td>
-                <td>${pens}</td>
+                <td class="col-penalties">${pens}</td>
             </tr>`;
 
             /* ── Session cut lines ── */
@@ -1644,8 +1559,8 @@ function renderSessionResults(session, drivers, positions, laps, stints, raceCon
 
         return header + renderWeather(weather) + `<div class="results-wrap"><table class="results-table">
             <thead><tr>
-                <th class="fav-star-th"></th><th>POS</th><th>DRIVER</th><th>TEAM</th>
-                <th>BEST LAP</th><th>GAP</th><th>TYRE</th><th>PENALTIES</th>
+                <th class="fav-star-th"></th><th>POS</th><th>DRIVER</th><th class="col-team">TEAM</th>
+                <th>BEST LAP</th><th class="col-gap">GAP</th><th>TYRE</th><th class="col-penalties">PENALTIES</th>
             </tr></thead>
             <tbody>${rows}</tbody>
         </table></div>`;
@@ -1658,6 +1573,7 @@ async function navCalendar() {
     currentMeeting = null;
     currentSession = null;
     clearCountdown();
+    updateHash('');
     const sBtn = document.getElementById('standingsBtn');
     if (sBtn) sBtn.classList.remove('active');
     updateBreadcrumb();
@@ -1711,6 +1627,7 @@ async function navCalendar() {
 async function navWeekend(meetingKey) {
     currentView = 'weekend';
     clearCountdown();
+    updateHash(`weekend/${meetingKey}/${currentYear}`);
     showLoading();
     try {
         const [meetings, sessions] = await Promise.all([
@@ -1732,6 +1649,7 @@ async function navWeekend(meetingKey) {
 async function navSession(sessionKey, meetingKey) {
     currentView = 'session';
     clearCountdown();
+    updateHash(`session/${meetingKey}/${sessionKey}/${currentYear}`);
     showLoading();
     try {
         /* Ensure we have meeting + session objects */
@@ -1745,6 +1663,11 @@ async function navSession(sessionKey, meetingKey) {
         } else {
             const sessions = await getSessions(meetingKey);
             currentSession = sessions.find(s => s.session_key === sessionKey);
+        }
+        if (!currentSession) {
+            hideLoading();
+            setApp(renderError('Session not found', 'This session may not exist or data is unavailable.'));
+            return;
         }
         updateBreadcrumb();
 
@@ -1785,6 +1708,7 @@ async function navStandings() {
     currentMeeting = null;
     currentSession = null;
     clearCountdown();
+    updateHash(`standings/${currentYear}`);
     document.getElementById('standingsBtn').classList.add('active');
     document.getElementById('ratingsBtn').classList.remove('active');
     document.getElementById('gameBtn').classList.remove('active');
@@ -1873,10 +1797,35 @@ function applyTimezone(tz) {
 
 document.getElementById('tzSelect').addEventListener('change', function () {
     applyTimezone(this.value);
+    /* Re-render the current view — data is already cached, so no network requests */
     if (currentView === 'weekend' && currentMeeting) {
         navWeekend(currentMeeting.meeting_key);
+    } else if (currentView === 'calendar') {
+        navCalendar();
+    } else if (currentView === 'session' && currentSession) {
+        navSession(currentSession.session_key, currentMeeting.meeting_key);
     }
 });
+
+/* ─── HAMBURGER MENU ─────────────────────────────────────── */
+(function initHamburger() {
+    const btn = document.getElementById('hamburgerBtn');
+    const headerRight = document.querySelector('.header-right');
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = headerRight.classList.toggle('menu-open');
+        btn.classList.toggle('open', open);
+        document.body.style.overflow = open ? 'hidden' : '';
+    });
+    /* Close menu when a nav item is clicked */
+    headerRight.querySelectorAll('.header-nav-item').forEach(item => {
+        item.addEventListener('click', () => {
+            headerRight.classList.remove('menu-open');
+            btn.classList.remove('open');
+            document.body.style.overflow = '';
+        });
+    });
+})();
 
 /* ─── INIT ───────────────────────────────────────────────── */
 (function init() {
@@ -1887,5 +1836,5 @@ document.getElementById('tzSelect').addEventListener('change', function () {
     document.getElementById('nextYear').disabled = (currentYear >= thisYear);
     applyTheme(localStorage.getItem('f1-theme') || 'light');
     applyTimezone(localStorage.getItem('f1-tz') || 'auto');
-    navCalendar();
+    routeFromHash();
 })();

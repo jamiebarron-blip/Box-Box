@@ -6,8 +6,11 @@
     <title>Box Box</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://api.openf1.org">
+    <link rel="preconnect" href="https://api.jolpi.ca">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
+    <link rel="manifest" href="manifest.json">
 </head>
 <body>
 
@@ -18,15 +21,15 @@
                 <span class="logo-box2">BOX</span>
             </div>
             <div class="header-right">
-                <button class="standings-btn" id="standingsBtn">🏆 STANDINGS</button>
-                <button class="standings-btn" id="ratingsBtn">⭐ RATINGS</button>
-                <button class="game-nav-btn" id="gameBtn" title="Mini Game">🎮</button>
-                <div class="year-selector">
+                <button class="standings-btn header-nav-item" id="standingsBtn">🏆 STANDINGS</button>
+                <button class="standings-btn header-nav-item" id="ratingsBtn">⭐ RATINGS</button>
+                <button class="game-nav-btn header-nav-item" id="gameBtn" title="Mini Game">🎮</button>
+                <div class="year-selector header-nav-item">
                     <button class="year-btn" id="prevYear">&#8249;</button>
                     <span class="current-year" id="currentYearDisplay">2025</span>
                     <button class="year-btn" id="nextYear">&#8250;</button>
                 </div>
-                <div class="tz-select-wrap">
+                <div class="tz-select-wrap header-nav-item">
                     <span class="tz-globe">🌍</span>
                     <select id="tzSelect" class="tz-select">
                         <option value="auto">My Time</option>
@@ -45,13 +48,18 @@
                         <option value="America/Sao_Paulo">São Paulo (BRT)</option>
                     </select>
                 </div>
-                <div class="theme-toggle-wrap" id="themeToggle" role="button" tabindex="0" title="Toggle dark / light mode">
+                <div class="theme-toggle-wrap header-nav-item" id="themeToggle" role="button" tabindex="0" title="Toggle dark / light mode">
                     <span class="theme-icon">☀️</span>
                     <span class="toggle-track">
                         <span class="toggle-thumb"></span>
                     </span>
                     <span class="theme-icon">🌙</span>
                 </div>
+                <button class="hamburger-btn" id="hamburgerBtn" aria-label="Menu">
+                    <span class="hamburger-line"></span>
+                    <span class="hamburger-line"></span>
+                    <span class="hamburger-line"></span>
+                </button>
             </div>
         </div>
     </header>
