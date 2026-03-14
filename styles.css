@@ -1136,6 +1136,7 @@ body {
     cursor: pointer; padding: 6px 8px; border-radius: 8px;
     transition: background 0.2s; line-height: 1;
 }
+.game-label { display: none; }
 .game-nav-btn:hover { background: var(--border); }
 .game-nav-btn.active { background: var(--f1-red-dim); }
 .game-wrap {
@@ -1260,8 +1261,8 @@ body {
         flex-direction: column;
         align-items: stretch;
         justify-content: flex-start;
-        padding: 72px 24px 24px;
-        gap: 12px;
+        padding: 60px 20px 20px;
+        gap: 0;
         overflow-y: auto;
     }
     .header-right.menu-open .hamburger-btn {
@@ -1270,26 +1271,50 @@ body {
         right: 20px;
         display: flex;
     }
+    /* Dividers between menu sections */
+    .menu-divider {
+        display: none;
+        border: none;
+        border-top: 1px solid var(--border);
+        margin: 8px 0;
+        width: 100%;
+    }
+    .header-right.menu-open .menu-divider {
+        display: block;
+    }
+    /* Theme toggle at top */
+    .header-right.menu-open .theme-toggle-wrap {
+        justify-content: center;
+        padding: 12px 0 8px;
+    }
+    /* Year selector */
+    .header-right.menu-open .year-selector {
+        width: 100%;
+        justify-content: center;
+        padding: 8px 16px 12px;
+    }
+    /* Nav buttons */
     .header-right.menu-open .standings-btn {
         width: 100%;
         text-align: left;
         padding: 14px 16px;
         font-size: 16px;
         border-radius: 12px;
+        margin: 4px 0;
     }
     .header-right.menu-open .game-nav-btn {
         width: 100%;
         text-align: left;
         padding: 14px 16px;
-        font-size: 20px;
+        font-size: 16px;
         border-radius: 12px;
         border: 1px solid var(--border);
+        margin: 4px 0;
     }
-    .header-right.menu-open .year-selector {
-        width: 100%;
-        justify-content: center;
-        padding: 12px 16px;
+    .header-right.menu-open .game-label {
+        display: inline;
     }
+    /* Timezone selector */
     .header-right.menu-open .tz-select-wrap {
         width: 100%;
         padding: 12px 16px;
@@ -1297,10 +1322,6 @@ body {
     .header-right.menu-open .tz-select {
         max-width: none;
         flex: 1;
-    }
-    .header-right.menu-open .theme-toggle-wrap {
-        justify-content: center;
-        padding: 12px 0;
     }
 }
 @media (max-width: 640px) {

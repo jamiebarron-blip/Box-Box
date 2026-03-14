@@ -21,14 +21,23 @@
                 <span class="logo-box2">BOX</span>
             </div>
             <div class="header-right">
-                <button class="standings-btn header-nav-item" id="standingsBtn">🏆 STANDINGS</button>
-                <button class="standings-btn header-nav-item" id="ratingsBtn">⭐ RATINGS</button>
-                <button class="game-nav-btn header-nav-item" id="gameBtn" title="Mini Game">🎮</button>
+                <div class="theme-toggle-wrap header-nav-item" id="themeToggle" role="button" tabindex="0" title="Toggle dark / light mode">
+                    <span class="theme-icon">☀️</span>
+                    <span class="toggle-track">
+                        <span class="toggle-thumb"></span>
+                    </span>
+                    <span class="theme-icon">🌙</span>
+                </div>
                 <div class="year-selector header-nav-item">
                     <button class="year-btn" id="prevYear">&#8249;</button>
                     <span class="current-year" id="currentYearDisplay">2025</span>
                     <button class="year-btn" id="nextYear">&#8250;</button>
                 </div>
+                <hr class="menu-divider header-nav-item" />
+                <button class="standings-btn header-nav-item" id="standingsBtn">🏆 STANDINGS</button>
+                <button class="standings-btn header-nav-item" id="ratingsBtn">⭐ RATINGS</button>
+                <button class="game-nav-btn header-nav-item" id="gameBtn" title="Pit Stop Game"><span class="game-icon">🏎️</span><span class="game-label"> PIT STOP GAME</span></button>
+                <hr class="menu-divider header-nav-item" />
                 <div class="tz-select-wrap header-nav-item">
                     <span class="tz-globe">🌍</span>
                     <select id="tzSelect" class="tz-select">
@@ -47,13 +56,6 @@
                         <option value="America/Los_Angeles">Los Angeles (PT)</option>
                         <option value="America/Sao_Paulo">São Paulo (BRT)</option>
                     </select>
-                </div>
-                <div class="theme-toggle-wrap header-nav-item" id="themeToggle" role="button" tabindex="0" title="Toggle dark / light mode">
-                    <span class="theme-icon">☀️</span>
-                    <span class="toggle-track">
-                        <span class="toggle-thumb"></span>
-                    </span>
-                    <span class="theme-icon">🌙</span>
                 </div>
                 <button class="hamburger-btn" id="hamburgerBtn" aria-label="Menu">
                     <span class="hamburger-line"></span>
